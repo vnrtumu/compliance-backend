@@ -9,13 +9,16 @@ class UploadBase(BaseModel):
 
 class UploadCreate(UploadBase):
     storage_path: str
+    file_hash: Optional[str] = None
 
 class Upload(UploadBase):
     id: int
     created_at: datetime
     extraction_status: Optional[str] = "pending"
     extraction_result: Optional[Dict[str, Any]] = None
+    extraction_result: Optional[Dict[str, Any]] = None
     is_valid: Optional[bool] = None
+    file_hash: Optional[str] = None
 
     class Config:
         from_attributes = True

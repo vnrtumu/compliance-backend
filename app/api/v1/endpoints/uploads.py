@@ -101,13 +101,31 @@ async def upload_files(
     # Ensure upload directory exists
     if not os.path.exists(settings.UPLOAD_DIR):
         os.makedirs(settings.UPLOAD_DIR)
+    
+    import hashlib
+    from app.models.upload import Upload as UploadModel
         
     for file in files:
         file_path = os.path.join(settings.UPLOAD_DIR, file.filename)
         
         try:
-            # Read file content first to check if it's a JSON invoice array
+            # Read file content
             content = await file.read()
+            
+            # Compute SHA256 hash
+            file_hash = hashlib.sha256(content).hexdigest()
+            
+            # Check if file already exists
+            existing_upload = db.query(UploadModel).filter(UploadModel.file_hash == file_hash).first()
+            if existing_upload:
+                results.append(UploadResult(
+                    filename=existing_upload.filename,
+                    content_type=existing_upload.content_type,
+                    size=existing_upload.size,
+                    status="success",  # Return success so frontend sees it as "done"
+                    id=existing_upload.id
+                ))
+                continue
             
             # Check if it's a JSON file with invoice data
             if file.content_type == "application/json" or file.filename.endswith('.json'):
@@ -145,7 +163,8 @@ async def upload_files(
                     filename=file.filename,
                     content_type=file.content_type,
                     size=file_size,
-                    storage_path=file_path
+                    storage_path=file_path,
+                    file_hash=file_hash
                 )
             )
             

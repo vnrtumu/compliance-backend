@@ -11,6 +11,7 @@ class Upload(Base):
     size = Column(Integer, nullable=False)
     storage_path = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    file_hash = Column(String, index=True, nullable=True)  # SHA256 hash for deduplication
     
     # Extraction fields
     extraction_status = Column(String, default="pending")  # pending, processing, completed, failed
