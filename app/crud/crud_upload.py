@@ -1,3 +1,4 @@
+from typing import Any, Dict, Union
 from sqlalchemy.orm import Session
 from app.models.upload import Upload
 from app.schemas.upload import UploadCreate
@@ -21,4 +22,21 @@ class CRUDUpload:
         db.refresh(db_obj)
         return db_obj
 
+    def update(self, db: Session, *, db_obj: Upload, obj_in: Union[Dict[str, Any], Any]):
+        """Update an upload record with new data."""
+        if isinstance(obj_in, dict):
+            update_data = obj_in
+        else:
+            update_data = obj_in.dict(exclude_unset=True)
+        
+        for field, value in update_data.items():
+            if hasattr(db_obj, field):
+                setattr(db_obj, field, value)
+        
+        db.add(db_obj)
+        db.commit()
+        db.refresh(db_obj)
+        return db_obj
+
 upload = CRUDUpload()
+

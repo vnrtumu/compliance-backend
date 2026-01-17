@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     ExternalDatabaseURL: Optional[str] = None
     InternalDatabaseURL: Optional[str] = None
     UPLOAD_DIR: str = "uploads"
+    OPENAI_API_KEY: Optional[str] = None
 
     @property
     def sync_database_url(self) -> str:

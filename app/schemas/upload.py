@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 from pydantic import BaseModel
 
 class UploadBase(BaseModel):
@@ -13,6 +13,9 @@ class UploadCreate(UploadBase):
 class Upload(UploadBase):
     id: int
     created_at: datetime
+    extraction_status: Optional[str] = "pending"
+    extraction_result: Optional[Dict[str, Any]] = None
+    is_valid: Optional[bool] = None
 
     class Config:
         from_attributes = True
@@ -24,3 +27,4 @@ class UploadResult(BaseModel):
     status: str = "success"
     error: Optional[str] = None
     id: Optional[int] = None # Added ID for tracked uploads
+
