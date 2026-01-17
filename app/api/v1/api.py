@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import users, uploads, invoices, extraction, extraction_stream, validation_checklist, validation, validation_stream, resolver
+from app.api.v1.endpoints import users, uploads, invoices, extraction, extraction_stream, validation_checklist, validation, validation_stream, resolver, reporter
 
 api_router = APIRouter()
 api_router.include_router(users.router, prefix="/users", tags=["users"])
@@ -11,6 +11,7 @@ api_router.include_router(validation_checklist.router, prefix="/validation-check
 api_router.include_router(validation.router, prefix="/validation", tags=["validation"])
 api_router.include_router(validation_stream.router, prefix="/validation", tags=["validation-stream"])
 api_router.include_router(resolver.router, prefix="/resolver", tags=["resolver"])
+api_router.include_router(reporter.router, prefix="/reporter", tags=["reporter"])
 
 
 
