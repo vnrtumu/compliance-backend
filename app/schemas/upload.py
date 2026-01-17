@@ -26,5 +26,7 @@ class UploadResult(BaseModel):
     size: int
     status: str = "success"
     error: Optional[str] = None
-    id: Optional[int] = None # Added ID for tracked uploads
+    id: Optional[int] = None  # Added ID for tracked uploads
+    imported_count: Optional[int] = None  # Number of invoices imported from JSON
+
 
