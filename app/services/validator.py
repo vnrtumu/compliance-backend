@@ -18,6 +18,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.models.validation_checklist import ValidationChecklist
+from app.services.gst_client import gst_client
 
 
 class ValidationStatus(str, Enum):
@@ -250,6 +251,51 @@ class LLMValidatorAgent:
         """
         extracted = extraction_result.get("extracted_fields", {})
         
+        # Helper to safely get nested dict keys
+        def get_val(d, *keys):
+            for k in keys:
+                if isinstance(d, dict):
+                    d = d.get(k)
+                else:
+                    return None
+            return d
+
+        # --- ENRICHMENT START ---
+        # Fetch "Live" Data from Mock GST Server
+        enrichment_data = {}
+        
+        # 1. Validate GSTIN
+        vendor_gstin = extracted.get("vendor_gstin") or extracted.get("seller_gstin")
+        if vendor_gstin:
+            gstin_info = gst_client.validate_gstin(vendor_gstin)
+            enrichment_data["gstin_portal_status"] = gstin_info
+        
+        # 2. Check HSN Rate
+        items = extracted.get("line_items", [])
+        hsn_validation = []
+        for item in items:
+            hsn = item.get("hsn_code") or item.get("hsn_sac")
+            if hsn:
+                inv_date = extracted.get("invoice_date")
+                rate_info = gst_client.get_hsn_rate(str(hsn), inv_date)
+                hsn_validation.append({
+                    "hsn": hsn,
+                    "portal_rate_info": rate_info
+                })
+        if hsn_validation:
+            enrichment_data["hsn_portal_validation"] = hsn_validation
+
+        # 3. Check e-Invoice Eligibility
+        if vendor_gstin:
+             eligibility = gst_client.check_einvoice_eligibility(vendor_gstin)
+             enrichment_data["einvoice_eligibility"] = eligibility
+
+        # Update vendor_info with enriched data if not present
+        if not vendor_info:
+            vendor_info = {}
+        vendor_info["portal_verification"] = enrichment_data
+        # --- ENRICHMENT END ---
+
         # Build the validation prompt
         prompt = self._build_validation_prompt(extracted, vendor_info)
         

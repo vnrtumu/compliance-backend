@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     
     # LLM Configuration
     DEFAULT_LLM_PROVIDER: str = "groq"  # Options: openai, groq, deepseek, grok
+    
+    # Mock GST Server
+    GST_SERVER_URL: str = "http://localhost:8080"
 
     @property
     def sync_database_url(self) -> str:
