@@ -161,7 +161,12 @@ Respond with a JSON object in this exact format:
 }
 
 If a field is not present or not applicable, use null for that field.
-Only respond with the JSON object, no additional text."""
+Only respond with the JSON object, no additional text.
+
+CRITICAL INSTRUCTIONS FOR REJECTION:
+1. If the image is NOT a document (e.g. a photo of a person, SELFIE, CHILD, animal, landscape, random object), set "is_valid_invoice": false, "decision": "REJECT", "rejection_reasons": ["Not a document/invoice", "Random image detected", "Photo of person/object"].
+2. If the document is not an invoice (e.g. valid ID card, subway map, handwriting, random text), set "is_valid_invoice": false.
+3. If "seller_gstin" is NOT found or visible, set "is_valid_invoice": false, "decision": "REJECT", "rejection_reasons": ["Missing Seller GSTIN"]."""
 
         # Build the message with images
         content = [{"type": "text", "text": extraction_prompt}]
@@ -200,6 +205,43 @@ Only respond with the JSON object, no additional text."""
                 result_text = result_text[:-3]
             
             result = json.loads(result_text.strip())
+            
+            # --- STRICT EDGE CASE HANDLING ---
+            # 1. Programmatic check for GSTIN (Critical for compliance)
+            extracted = result.get("extracted_fields", {})
+            seller_gstin = extracted.get("seller_gstin")
+            
+            # 2. Strict Document Type Check
+            valid_doc_types = ["gst_invoice", "bill_of_supply", "receipt", "purchase_order"]
+            doc_type = result.get("document_type", "unknown").lower()
+            
+            # 3. Confidence Check
+            confidence = result.get("confidence_score", 0.0)
+            
+            reasons = result.get("rejection_reasons", [])
+            
+            should_reject = False
+            
+            if not result.get("is_valid_invoice", False):
+                should_reject = True # Already rejected by LLM
+                
+            elif doc_type not in valid_doc_types:
+                should_reject = True
+                reasons.append(f"Invalid document type: {doc_type}")
+                
+            elif not seller_gstin:
+                should_reject = True
+                reasons.append("Missing Seller GSTIN (Enforced)")
+                
+            elif confidence < 0.6: # Reject low confidence extractions
+                should_reject = True
+                reasons.append(f"Low confidence score: {confidence}")
+
+            if should_reject:
+                result["is_valid_invoice"] = False
+                result["decision"] = "REJECT"
+                result["rejection_reasons"] = reasons
+                
             return result
 
         except json.JSONDecodeError as e:

@@ -76,6 +76,37 @@ class BulkProcessor:
                     # Refresh to get updated data
                     db.refresh(upload)
                 
+                    # Refresh to get updated data
+                    db.refresh(upload)
+                
+                # Check if valid invoice before proceeding
+                # Check both the DB flag AND the raw JSON result to be safe
+                is_valid_db = upload.is_valid
+                is_valid_json = upload.extraction_result.get("is_valid_invoice", True) if upload.extraction_result else False
+                
+                if (is_valid_db is False) or (is_valid_json is False):
+                    # Auto-reject invalid documents
+                    reasons = upload.extraction_result.get("rejection_reasons", ["Invalid Document"])
+                    mock_report = {
+                        "decision": {"status": "REJECT"},
+                        "summary": f"Document rejected during extraction: {', '.join(reasons)}",
+                        "validation_results": []
+                    }
+                    
+                    crud.upload.update(db, db_obj=upload, obj_in={
+                        "invoice_status": "REJECTED",
+                        "batch_processing_status": "completed",
+                        "processing_time": (datetime.now() - start_time).total_seconds(),
+                        "reporter_result": mock_report
+                    })
+                    
+                    return {
+                        "upload_id": upload_id,
+                        "status": "completed",
+                        "invoice_status": "REJECTED",
+                        "error": "Document rejected: Not a valid invoice"
+                    }
+
                 # Step 2: Validation
                 validation_result = await asyncio.to_thread(
                     validator_agent.validate_document,
