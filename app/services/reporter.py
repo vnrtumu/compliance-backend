@@ -6,12 +6,12 @@ from the Extractor, Validator, and Resolver agents.
 """
 
 import json
-from openai import OpenAI
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from pydantic import BaseModel
 
 from app.core.config import settings
+from app.services.llm_client import get_llm_client, get_model_name, get_current_provider
 
 
 class ActionItem(BaseModel):
@@ -41,8 +41,9 @@ class ReporterAgent:
     """
     
     def __init__(self):
-        self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        self.model = "gpt-4o"
+        # Use configurable LLM client
+        self.client = None  # Will be set dynamically
+        self.model = None  # Will be set dynamically
     
     def generate_report(
         self,
@@ -218,8 +219,16 @@ IMPORTANT:
 - Calculate risk based on failed checks severity"""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            # Get LLM client and model for current provider
+            provider = get_current_provider()
+            model = get_model_name()
+            client = get_llm_client()
+            
+            print(f"🤖 Using LLM Provider: {provider}")
+            print(f"📦 Model: {model}")
+            
+            response = client.chat.completions.create(
+                model=model,
                 messages=[
                     {"role": "system", "content": "You are an expert GST/TDS compliance report generator. Return only valid JSON."},
                     {"role": "user", "content": prompt}
@@ -234,16 +243,59 @@ IMPORTANT:
             # Add metadata
             report["upload_id"] = upload_id
             report["invoice_details"] = context["invoice"]
+            report["llm_metadata"] = {
+                "provider": provider,
+                "model": model,
+                "generated_at": datetime.now().isoformat()
+            }
             
             return report
             
         except Exception as e:
+            # Get provider info for error reporting
+            provider = get_current_provider()
+            model = get_model_name()
+            
+            # Determine error type
+            error_type = type(e).__name__
+            error_message = str(e)
+            
+            # Create detailed error report
+            error_details = {
+                "llm_provider": provider,
+                "llm_model": model,
+                "error_type": error_type,
+                "error_message": error_message,
+            }
+            
+            # Check for specific error types
+            if "402" in error_message or "Insufficient Balance" in error_message:
+                error_details["issue"] = "INSUFFICIENT_BALANCE"
+                error_details["suggestion"] = f"The {provider.upper()} API account has insufficient balance. Please add credits or switch to a different LLM provider in Settings."
+            elif "401" in error_message or "Unauthorized" in error_message:
+                error_details["issue"] = "INVALID_API_KEY"
+                error_details["suggestion"] = f"The API key for {provider.upper()} is invalid or missing. Please check your .env configuration."
+            elif "429" in error_message or "rate limit" in error_message.lower():
+                error_details["issue"] = "RATE_LIMIT_EXCEEDED"
+                error_details["suggestion"] = f"The {provider.upper()} API rate limit has been exceeded. Please wait or switch providers."
+            else:
+                error_details["issue"] = "UNKNOWN_ERROR"
+                error_details["suggestion"] = "An unexpected error occurred. Please check logs for more details."
+            
+            print(f"❌ LLM Error Details:")
+            print(f"   Provider: {provider}")
+            print(f"   Model: {model}")
+            print(f"   Error Type: {error_type}")
+            print(f"   Error: {error_message}")
+            print(f"   Suggestion: {error_details['suggestion']}")
+            
             return {
                 "report_id": f"RPT-{upload_id}-ERROR",
                 "report_type": report_type,
-                "error": str(e),
+                "error": error_message,
+                "error_details": error_details,
                 "generated_at": datetime.now().isoformat(),
-                "executive_summary": f"Report generation failed: {str(e)}"
+                "executive_summary": f"📋 Executive Summary\nReport generation failed: {error_message}\n\n🤖 LLM Provider: {provider}\n📦 Model: {model}\n❌ Issue: {error_details['issue']}\n💡 Suggestion: {error_details['suggestion']}"
             }
     
     def generate_text_report(self, report: Dict) -> str:

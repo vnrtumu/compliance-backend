@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     InternalDatabaseURL: Optional[str] = None
     UPLOAD_DIR: str = "uploads"
     OPENAI_API_KEY: Optional[str] = None
+    GROQ_API_KEY: Optional[str] = None
+    DEEPSEEK_API_KEY: Optional[str] = None
+    GROK_API_KEY: Optional[str] = None
+    
+    # LLM Configuration
+    DEFAULT_LLM_PROVIDER: str = "groq"  # Options: openai, groq, deepseek, grok
 
     @property
     def sync_database_url(self) -> str:
