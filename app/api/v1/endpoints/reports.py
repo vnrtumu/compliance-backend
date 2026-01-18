@@ -49,11 +49,24 @@ def get_reports_statistics(db: Session = Depends(deps.get_db)) -> Dict[str, Any]
     # Generate alerts
     alerts = generate_alerts(validated_uploads)
     
+    # Get recent invoices (last 10 with reports)
+    recent_invoices = []
+    for upload in sorted(all_uploads, key=lambda x: x.created_at or datetime.min, reverse=True)[:10]:
+        recent_invoices.append({
+            "id": upload.id,
+            "filename": upload.filename,
+            "invoice_status": upload.invoice_status,
+            "compliance_score": upload.compliance_score,
+            "created_at": upload.created_at.isoformat() if upload.created_at else None,
+            "has_report": upload.reporter_result is not None
+        })
+    
     return {
         "overview": overview,
         "category_breakdown": category_breakdown,
         "trend_data": trend_data,
-        "alerts": alerts
+        "alerts": alerts,
+        "recent_invoices": recent_invoices
     }
 
 
@@ -183,10 +196,12 @@ def calculate_category_breakdown(validated_uploads: List[Upload]) -> Dict[str, D
         validation_results = val_result.get("validation_results", [])
         
         # Group by category prefix
+        has_categorized_checks = False
         for category_prefix, category_info in categories.items():
             category_checks = [v for v in validation_results if v.get("check_code", "").startswith(f"{category_prefix}-")]
             
             if category_checks:
+                has_categorized_checks = True
                 # Calculate pass rate for this category
                 passed = sum(1 for v in category_checks if v.get("status") == "PASS")
                 total_checks = len(category_checks)
@@ -195,6 +210,16 @@ def calculate_category_breakdown(validated_uploads: List[Upload]) -> Dict[str, D
                 # Convert to points
                 score = pass_rate * category_info["max_points"]
                 category_scores[category_info["name"]].append(score)
+        
+        # If no categorized checks, derive from overall compliance_score
+        if not has_categorized_checks and upload.compliance_score:
+            # Distribute the score proportionally across categories
+            total_max = sum(c["max_points"] for c in categories.values())
+            score_ratio = upload.compliance_score / 100.0  # Normalize to 0-1
+            
+            for category_info in categories.values():
+                category_score = score_ratio * category_info["max_points"]
+                category_scores[category_info["name"]].append(category_score)
     
     # Calculate averages
     breakdown = {}
