@@ -31,5 +31,9 @@ class Upload(Base):
     
     # Final invoice status (derived from reporter decision)
     invoice_status = Column(String, nullable=True, index=True)  # APPROVED, REJECTED, HUMAN_REVIEW_NEEDED
+    
+    # Processing time tracking
+    processing_start_time = Column(DateTime(timezone=True), nullable=True)  # When first agent starts
+    processing_time = Column(Float, nullable=True)  # Total time in seconds taken by all 4 agents
 
 

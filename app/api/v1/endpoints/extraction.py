@@ -4,6 +4,7 @@ Extraction API Endpoints
 Endpoints for triggering and retrieving document extraction results.
 """
 
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -41,7 +42,8 @@ async def extract_document(
     update_data = {
         "extraction_status": "completed",
         "extraction_result": result,
-        "is_valid": result.get("is_valid_invoice", False)
+        "is_valid": result.get("is_valid_invoice", False),
+        "processing_start_time": datetime.now()  # Track when processing starts
     }
     crud.upload.update(db, db_obj=upload, obj_in=update_data)
     

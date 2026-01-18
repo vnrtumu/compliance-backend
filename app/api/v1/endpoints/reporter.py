@@ -86,9 +86,15 @@ def generate_report(
     else:
         invoice_status = "HUMAN_REVIEW_NEEDED"
     
+    # Calculate processing time if start time exists
+    processing_time = None
+    if upload.processing_start_time:
+        processing_time = (datetime.now() - upload.processing_start_time).total_seconds()
+    
     crud.upload.update(db, db_obj=upload, obj_in={
         "reporter_result": report,
-        "invoice_status": invoice_status
+        "invoice_status": invoice_status,
+        "processing_time": processing_time
     })
     
     return report
@@ -187,9 +193,15 @@ async def generate_report_stream(upload_id: int, extraction_result: dict, valida
             else:
                 invoice_status = "HUMAN_REVIEW_NEEDED"
             
+            # Calculate processing time if start time exists
+            processing_time = None
+            if upload.processing_start_time:
+                processing_time = (datetime.now() - upload.processing_start_time).total_seconds()
+            
             crud.upload.update(db, db_obj=upload, obj_in={
                 "reporter_result": report,
-                "invoice_status": invoice_status
+                "invoice_status": invoice_status,
+                "processing_time": processing_time
             })
             
             # Explicitly commit to ensure data is saved

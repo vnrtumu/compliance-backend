@@ -12,8 +12,12 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pydantic import BaseModel
 from typing import Literal
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
+from app.core.db import SessionLocal
+from app.models.validation_checklist import ValidationChecklist
 
 
 class ValidationStatus(str, Enum):
@@ -164,6 +168,68 @@ class LLMValidatorAgent:
     def __init__(self):
         self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
         self.model = "gpt-4o"
+        self._validation_checks_cache = None
+    
+    def _get_validation_checks_from_db(self) -> List[Dict]:
+        """Fetch active validation checks from database."""
+        if self._validation_checks_cache is not None:
+            return self._validation_checks_cache
+        
+        db = SessionLocal()
+        try:
+            checks = db.query(ValidationChecklist).filter(
+                ValidationChecklist.is_active == True
+            ).order_by(
+                ValidationChecklist.category,
+                ValidationChecklist.check_code
+            ).all()
+            
+            self._validation_checks_cache = [
+                {
+                    "check_code": c.check_code,
+                    "check_name": c.check_name,
+                    "category": c.category,
+                    "subcategory": c.subcategory,
+                    "description": c.description,
+                    "validation_logic": c.validation_logic,
+                    "error_message": c.error_message,
+                    "complexity": c.complexity,
+                    "auto_reject": c.auto_reject,
+                    "requires_manual_review": c.requires_manual_review,
+                    "weight": c.weight
+                }
+                for c in checks
+            ]
+            return self._validation_checks_cache
+        finally:
+            db.close()
+    
+    def _format_validation_checklist(self) -> str:
+        """Format validation checks from database into a readable checklist."""
+        checks = self._get_validation_checks_from_db()
+        
+        # Group by category
+        by_category = {}
+        for check in checks:
+            cat = check["category"]
+            if cat not in by_category:
+                by_category[cat] = []
+            by_category[cat].append(check)
+        
+        # Build formatted checklist
+        checklist = [f"## Validation Checklist ({len(checks)} Checks)\n"]
+        
+        for category, cat_checks in sorted(by_category.items()):
+            checklist.append(f"\n### {category} ({len(cat_checks)} checks)")
+            for check in cat_checks:
+                line = f"- {check['check_code']}: {check['description']}"
+                if check['auto_reject']:
+                    line += " [AUTO-REJECT]"
+                if check['requires_manual_review']:
+                    line += " [MANUAL-REVIEW]"
+                checklist.append(line)
+        
+        return "\n".join(checklist)
     
     def validate_document(
         self,
@@ -261,6 +327,9 @@ Return your response as a JSON object with the exact structure specified."""
     ) -> str:
         """Build the validation prompt with invoice data and context."""
         
+        # Get validation checklist from database
+        validation_checklist = self._format_validation_checklist()
+        
         prompt = f"""
 ## Invoice Data to Validate
 
@@ -270,7 +339,7 @@ Return your response as a JSON object with the exact structure specified."""
 
 {COMPANY_CONTEXT}
 
-{VALIDATION_CHECKLIST}
+{validation_checklist}
 
 ## Vendor Information
 {json.dumps(vendor_info, indent=2, default=str) if vendor_info else "Not available - use GSTIN lookup logic"}

@@ -39,6 +39,26 @@ def process_json_invoices(db: Session, json_data, source_filename: str) -> List[
     invoices = json_data if isinstance(json_data, list) else [json_data]
     
     for idx, invoice in enumerate(invoices):
+        # Normalize JSON fields to match expected extraction format
+        normalized_fields = {
+            # Copy all original fields
+            **invoice,
+            # Add normalized vendor fields
+            "seller_name": invoice.get("vendor", {}).get("name"),
+            "seller_gstin": invoice.get("vendor", {}).get("gstin"),
+            "seller_pan": invoice.get("vendor", {}).get("pan"),
+            "seller_address": invoice.get("vendor", {}).get("address"),
+            "vendor_name": invoice.get("vendor", {}).get("name"),
+            "vendor_gstin": invoice.get("vendor", {}).get("gstin"),
+            # Add normalized buyer fields
+            "buyer_name": invoice.get("buyer", {}).get("name"),
+            "buyer_gstin": invoice.get("buyer", {}).get("gstin"),
+            "buyer_address": invoice.get("buyer", {}).get("address"),
+            # Normalize amount fields
+            "invoice_amount": invoice.get("total_amount"),
+            "total": invoice.get("total_amount"),
+        }
+        
         # Create extraction result from JSON data
         extraction_result = {
             "is_valid_invoice": True,
@@ -46,7 +66,7 @@ def process_json_invoices(db: Session, json_data, source_filename: str) -> List[
             "document_type": "json_import",
             "confidence_score": 1.0,
             "rejection_reasons": [],
-            "extracted_fields": invoice,
+            "extracted_fields": normalized_fields,
             "source": "json_import"
         }
         

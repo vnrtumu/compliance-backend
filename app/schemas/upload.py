@@ -32,6 +32,10 @@ class Upload(UploadBase):
     
     # Final invoice status
     invoice_status: Optional[str] = None
+    
+    # Processing time tracking
+    processing_start_time: Optional[datetime] = None
+    processing_time: Optional[float] = None
 
     class Config:
         from_attributes = True
