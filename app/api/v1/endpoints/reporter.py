@@ -86,9 +86,10 @@ def generate_report(
     return report
 
 
-async def generate_report_stream(upload_id: int, extraction_result: dict, validation_result: dict, resolver_result: dict):
+async def generate_report_stream(upload_id: int, extraction_result: dict, validation_result: dict, resolver_result: dict, db: Session):
     """Generate SSE stream for report generation progress."""
     from openai import OpenAI
+    from app import crud
     
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
     
@@ -166,6 +167,15 @@ async def generate_report_stream(upload_id: int, extraction_result: dict, valida
         text_report = reporter_agent.generate_text_report(report)
         report["text_report"] = text_report
         
+        # Save report to database
+        upload = db.query(Upload).filter(Upload.id == upload_id).first()
+        if upload:
+            updated_validation = upload.validation_result.copy() if upload.validation_result else {}
+            updated_validation["report"] = report
+            crud.upload.update(db, db_obj=upload, obj_in={
+                "validation_result": updated_validation
+            })
+        
         yield f"data: {json.dumps({'step': 'result', 'result': report})}\n\n"
         
     except Exception as e:
@@ -191,7 +201,7 @@ async def stream_report(
     resolver_result = validation_result.get("resolution") if validation_result else None
     
     return StreamingResponse(
-        generate_report_stream(upload_id, upload.extraction_result, validation_result, resolver_result),
+        generate_report_stream(upload_id, upload.extraction_result, validation_result, resolver_result, db),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -119,11 +119,12 @@ async def upload_files(
             existing_upload = db.query(UploadModel).filter(UploadModel.file_hash == file_hash).first()
             if existing_upload:
                 results.append(UploadResult(
-                    filename=existing_upload.filename,
-                    content_type=existing_upload.content_type,
-                    size=existing_upload.size,
-                    status="success",  # Return success so frontend sees it as "done"
-                    id=existing_upload.id
+                    filename=file.filename,  # Use uploaded filename in response
+                    content_type=file.content_type,
+                    size=len(content),
+                    status="duplicate",  # Make it clear this is a duplicate
+                    id=existing_upload.id,
+                    error=f"File already exists as '{existing_upload.filename}' (ID: {existing_upload.id})"
                 ))
                 continue
             

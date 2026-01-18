@@ -16,9 +16,13 @@ class Upload(UploadBase):
     created_at: datetime
     extraction_status: Optional[str] = "pending"
     extraction_result: Optional[Dict[str, Any]] = None
-    extraction_result: Optional[Dict[str, Any]] = None
     is_valid: Optional[bool] = None
     file_hash: Optional[str] = None
+    
+    # Validation fields
+    validation_status: Optional[str] = "pending"
+    validation_result: Optional[Dict[str, Any]] = None
+    compliance_score: Optional[float] = None
 
     class Config:
         from_attributes = True
