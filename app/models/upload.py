@@ -22,5 +22,14 @@ class Upload(Base):
     validation_status = Column(String, default="pending")  # pending, APPROVED, REJECTED, REQUIRES_HUMAN_REVIEW
     validation_result = Column(JSON, nullable=True)  # Stores the full validation result
     compliance_score = Column(Float, nullable=True)  # 0-100 compliance score
+    
+    # Resolver fields
+    resolver_result = Column(JSON, nullable=True)  # Stores the full resolver result
+    
+    # Reporter fields
+    reporter_result = Column(JSON, nullable=True)  # Stores the full reporter result
+    
+    # Final invoice status (derived from reporter decision)
+    invoice_status = Column(String, nullable=True, index=True)  # APPROVED, REJECTED, HUMAN_REVIEW_NEEDED
 
 

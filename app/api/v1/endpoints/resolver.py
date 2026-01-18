@@ -77,20 +77,11 @@ def resolve_conflicts(
         historical_decisions=request.historical_decisions
     )
     
-    # Store resolution result
+    # Store resolution result in dedicated column
     from app import crud
-    resolution_data = {
-        "resolution_result": result,
-        "resolver_recommendation": result.get("final_recommendation"),
-        "resolver_confidence": result.get("confidence_score")
-    }
-    
-    # Update validation result with resolution
-    updated_validation = upload.validation_result.copy() if upload.validation_result else {}
-    updated_validation["resolution"] = result
     
     crud.upload.update(db, db_obj=upload, obj_in={
-        "validation_result": updated_validation
+        "resolver_result": result
     })
     
     return {

@@ -63,7 +63,7 @@ def generate_report(
     
     # Get validation and resolution results
     validation_result = upload.validation_result or {}
-    resolver_result = validation_result.get("resolution") if validation_result else None
+    resolver_result = upload.resolver_result
     
     # Generate report
     report = reporter_agent.generate_report(
@@ -74,13 +74,21 @@ def generate_report(
         report_type=request.report_type
     )
     
-    # Store report
+    # Store report in dedicated column
     from app import crud
-    updated_validation = upload.validation_result.copy() if upload.validation_result else {}
-    updated_validation["report"] = report
+    
+    # Extract decision and set invoice status
+    decision_status = report.get("decision", {}).get("status", "REVIEW")
+    if decision_status == "APPROVE":
+        invoice_status = "APPROVED"
+    elif decision_status == "REJECT":
+        invoice_status = "REJECTED"
+    else:
+        invoice_status = "HUMAN_REVIEW_NEEDED"
     
     crud.upload.update(db, db_obj=upload, obj_in={
-        "validation_result": updated_validation
+        "reporter_result": report,
+        "invoice_status": invoice_status
     })
     
     return report
@@ -167,14 +175,26 @@ async def generate_report_stream(upload_id: int, extraction_result: dict, valida
         text_report = reporter_agent.generate_text_report(report)
         report["text_report"] = text_report
         
-        # Save report to database
+        # Save report to database and set invoice status
         upload = db.query(Upload).filter(Upload.id == upload_id).first()
         if upload:
-            updated_validation = upload.validation_result.copy() if upload.validation_result else {}
-            updated_validation["report"] = report
+            # Extract decision and set invoice status
+            decision_status = report.get("decision", {}).get("status", "REVIEW")
+            if decision_status == "APPROVE":
+                invoice_status = "APPROVED"
+            elif decision_status == "REJECT":
+                invoice_status = "REJECTED"
+            else:
+                invoice_status = "HUMAN_REVIEW_NEEDED"
+            
             crud.upload.update(db, db_obj=upload, obj_in={
-                "validation_result": updated_validation
+                "reporter_result": report,
+                "invoice_status": invoice_status
             })
+            
+            # Explicitly commit to ensure data is saved
+            db.commit()
+            db.refresh(upload)
         
         yield f"data: {json.dumps({'step': 'result', 'result': report})}\n\n"
         
@@ -198,7 +218,8 @@ async def stream_report(
         raise HTTPException(status_code=400, detail="Document not extracted yet")
     
     validation_result = upload.validation_result or {}
-    resolver_result = validation_result.get("resolution") if validation_result else None
+    resolver_result = upload.resolver_result
+    
     
     return StreamingResponse(
         generate_report_stream(upload_id, upload.extraction_result, validation_result, resolver_result, db),

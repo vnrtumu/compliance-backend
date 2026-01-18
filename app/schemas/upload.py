@@ -23,6 +23,15 @@ class Upload(UploadBase):
     validation_status: Optional[str] = "pending"
     validation_result: Optional[Dict[str, Any]] = None
     compliance_score: Optional[float] = None
+    
+    # Resolver fields
+    resolver_result: Optional[Dict[str, Any]] = None
+    
+    # Reporter fields
+    reporter_result: Optional[Dict[str, Any]] = None
+    
+    # Final invoice status
+    invoice_status: Optional[str] = None
 
     class Config:
         from_attributes = True
