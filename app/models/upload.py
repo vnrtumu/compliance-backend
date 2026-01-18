@@ -35,5 +35,9 @@ class Upload(Base):
     # Processing time tracking
     processing_start_time = Column(DateTime(timezone=True), nullable=True)  # When first agent starts
     processing_time = Column(Float, nullable=True)  # Total time in seconds taken by all 4 agents
+    
+    # Batch processing tracking
+    batch_id = Column(String, index=True, nullable=True)  # Groups invoices uploaded/processed together
+    batch_processing_status = Column(String, nullable=True)  # pending, processing, completed, failed
 
 

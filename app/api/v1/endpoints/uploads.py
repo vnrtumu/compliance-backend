@@ -1,15 +1,130 @@
 import os
 import shutil
 import json
+import asyncio
+import threading
 from typing import List
-from fastapi import APIRouter, UploadFile, File, Depends
+from fastapi import APIRouter, UploadFile, File, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.api import deps
 from app.core.config import settings
+from app.core.db import SessionLocal
 from app.schemas.upload import UploadResult, Upload, UploadCreate
 from app import crud
 
 router = APIRouter()
+
+
+def run_background_processing(upload_ids: List[int], batch_id: str):
+    """
+    Background task to process all invoices through 4 agents.
+    Runs in a separate thread with its own database session.
+    Processes in batches of 5 to avoid overloading.
+    """
+    import time
+    from app.services.extractor import extractor_agent
+    from app.services.validator import validator_agent
+    from app.services.resolver import resolver_agent
+    from app.services.reporter import reporter_agent
+    from app.models.upload import Upload as UploadModel
+    from datetime import datetime
+    
+    BATCH_SIZE = 5
+    
+    # Process in batches
+    for batch_start in range(0, len(upload_ids), BATCH_SIZE):
+        batch_ids = upload_ids[batch_start:batch_start + BATCH_SIZE]
+        
+        for upload_id in batch_ids:
+            # Create new db session for each invoice
+            db = SessionLocal()
+            try:
+                upload = db.query(UploadModel).filter(UploadModel.id == upload_id).first()
+                if not upload:
+                    continue
+                
+                # Track start time
+                start_time = datetime.now()
+                
+                # Update status to processing
+                upload.batch_processing_status = "processing"
+                upload.processing_start_time = start_time
+                db.commit()
+                
+                try:
+                    # Step 1: Skip extraction if already done (JSON import)
+                    if upload.extraction_status != "completed":
+                        extraction_result = extractor_agent.analyze_document(upload.storage_path)
+                        upload.extraction_status = "completed"
+                        upload.extraction_result = extraction_result
+                        upload.is_valid = extraction_result.get("is_valid_invoice", False)
+                        db.commit()
+                        db.refresh(upload)
+                    
+                    # Step 2: Validation
+                    validation_result = validator_agent.validate_document(
+                        upload_id=upload_id,
+                        extraction_result=upload.extraction_result
+                    )
+                    upload.validation_result = validation_result
+                    upload.compliance_score = validation_result.get("compliance_score")
+                    upload.validation_status = validation_result.get("overall_status")
+                    db.commit()
+                    db.refresh(upload)
+                    
+                    # Step 3: Resolution
+                    invoice = upload.extraction_result.get("extracted_fields", {})
+                    resolver_result = resolver_agent.resolve(
+                        invoice=invoice,
+                        validation_result=validation_result,
+                        batch_context=None,
+                        historical_decisions=None
+                    )
+                    upload.resolver_result = resolver_result
+                    db.commit()
+                    db.refresh(upload)
+                    
+                    # Step 4: Reporting
+                    report = reporter_agent.generate_report(
+                        upload_id=upload_id,
+                        extraction_result=upload.extraction_result,
+                        validation_result=validation_result,
+                        resolver_result=resolver_result,
+                        report_type="executive_summary"
+                    )
+                    
+                    # Extract decision and set invoice status
+                    decision_status = report.get("decision", {}).get("status", "REVIEW")
+                    if decision_status == "APPROVE":
+                        invoice_status = "APPROVED"
+                    elif decision_status == "REJECT":
+                        invoice_status = "REJECTED"
+                    else:
+                        invoice_status = "HUMAN_REVIEW_NEEDED"
+                    
+                    # Calculate processing time
+                    processing_time = (datetime.now() - start_time).total_seconds()
+                    
+                    # Update with final results
+                    upload.reporter_result = report
+                    upload.invoice_status = invoice_status
+                    upload.processing_time = processing_time
+                    upload.batch_processing_status = "completed"
+                    db.commit()
+                    
+                    print(f"✅ Processed invoice #{upload_id}: {invoice_status}")
+                    
+                except Exception as e:
+                    upload.batch_processing_status = "failed"
+                    db.commit()
+                    print(f"❌ Failed invoice #{upload_id}: {str(e)}")
+                    
+            finally:
+                db.close()
+        
+        # Small delay between batches to be gentle on the API
+        if batch_start + BATCH_SIZE < len(upload_ids):
+            time.sleep(1)
 
 
 def is_invoice_json(data) -> bool:
@@ -29,31 +144,68 @@ def is_invoice_json(data) -> bool:
     return False
 
 
-def process_json_invoices(db: Session, json_data, source_filename: str) -> List[dict]:
+def process_json_invoices(db: Session, json_data, source_filename: str, batch_id: str = None) -> List[dict]:
     """
     Process JSON invoice data and store each invoice as a separate upload with extraction_result.
+    
+    Args:
+        db: Database session
+        json_data: JSON data containing invoice(s)
+        source_filename: Original filename
+        batch_id: Optional batch ID to group invoices together
     """
+    import uuid
     results = []
+    
+    # Generate batch_id if not provided
+    if not batch_id:
+        batch_id = str(uuid.uuid4())
     
     # Normalize to list
     invoices = json_data if isinstance(json_data, list) else [json_data]
     
     for idx, invoice in enumerate(invoices):
+        # Extract vendor info (handle nested vendor object)
+        vendor = invoice.get("vendor", {})
+        if isinstance(vendor, dict):
+            vendor_name = vendor.get("name")
+            vendor_gstin = vendor.get("gstin")
+            vendor_pan = vendor.get("pan")
+            vendor_address = vendor.get("address")
+        else:
+            vendor_name = invoice.get("vendor_name")
+            vendor_gstin = invoice.get("vendor_gstin") or invoice.get("seller_gstin")
+            vendor_pan = invoice.get("vendor_pan") or invoice.get("seller_pan")
+            vendor_address = invoice.get("vendor_address") or invoice.get("seller_address")
+        
+        # Extract buyer info (handle nested buyer object)
+        buyer = invoice.get("buyer", {})
+        if isinstance(buyer, dict):
+            buyer_name = buyer.get("name")
+            buyer_gstin = buyer.get("gstin")
+            buyer_address = buyer.get("address")
+        else:
+            buyer_name = invoice.get("buyer_name")
+            buyer_gstin = invoice.get("buyer_gstin")
+            buyer_address = invoice.get("buyer_address")
+        
         # Normalize JSON fields to match expected extraction format
         normalized_fields = {
             # Copy all original fields
             **invoice,
-            # Add normalized vendor fields
-            "seller_name": invoice.get("vendor", {}).get("name"),
-            "seller_gstin": invoice.get("vendor", {}).get("gstin"),
-            "seller_pan": invoice.get("vendor", {}).get("pan"),
-            "seller_address": invoice.get("vendor", {}).get("address"),
-            "vendor_name": invoice.get("vendor", {}).get("name"),
-            "vendor_gstin": invoice.get("vendor", {}).get("gstin"),
+            # Add normalized vendor fields (ensure GSTIN is properly extracted)
+            "seller_name": vendor_name,
+            "seller_gstin": vendor_gstin,
+            "seller_pan": vendor_pan,
+            "seller_address": vendor_address,
+            "vendor_name": vendor_name,
+            "vendor_gstin": vendor_gstin,
+            "vendor_pan": vendor_pan,
+            "vendor_address": vendor_address,
             # Add normalized buyer fields
-            "buyer_name": invoice.get("buyer", {}).get("name"),
-            "buyer_gstin": invoice.get("buyer", {}).get("gstin"),
-            "buyer_address": invoice.get("buyer", {}).get("address"),
+            "buyer_name": buyer_name,
+            "buyer_gstin": buyer_gstin,
+            "buyer_address": buyer_address,
             # Normalize amount fields
             "invoice_amount": invoice.get("total_amount"),
             "total": invoice.get("total_amount"),
@@ -74,7 +226,7 @@ def process_json_invoices(db: Session, json_data, source_filename: str) -> List[
         invoice_num = invoice.get('invoice_number') or invoice.get('invoice_no') or f"invoice_{idx+1}"
         filename = f"{source_filename}_{invoice_num}"
         
-        # Create upload record with pre-filled extraction
+        # Create upload record with pre-filled extraction and batch_id
         from app.models.upload import Upload as UploadModel
         db_obj = UploadModel(
             filename=filename,
@@ -83,7 +235,9 @@ def process_json_invoices(db: Session, json_data, source_filename: str) -> List[
             storage_path=f"json_import:{source_filename}",
             extraction_status="completed",
             extraction_result=extraction_result,
-            is_valid=True
+            is_valid=True,
+            batch_id=batch_id,
+            batch_processing_status="pending"
         )
         db.add(db_obj)
         db.commit()
@@ -93,10 +247,11 @@ def process_json_invoices(db: Session, json_data, source_filename: str) -> List[
             "id": db_obj.id,
             "filename": filename,
             "invoice_number": invoice_num,
+            "vendor_gstin": vendor_gstin,
             "status": "imported"
         })
     
-    return results
+    return results, batch_id
 
 
 @router.get("/", response_model=List[Upload])
@@ -155,16 +310,28 @@ async def upload_files(
                     
                     if is_invoice_json(json_data):
                         # Process as direct invoice import - skip AI extraction
-                        import_results = process_json_invoices(db, json_data, file.filename)
+                        import_results, batch_id = process_json_invoices(db, json_data, file.filename)
                         
-                        # Add to results with special status
+                        # Get all upload IDs for background processing
+                        upload_ids = [r["id"] for r in import_results]
+                        
+                        # Start background processing in a separate thread
+                        processing_thread = threading.Thread(
+                            target=run_background_processing,
+                            args=(upload_ids, batch_id),
+                            daemon=True
+                        )
+                        processing_thread.start()
+                        
+                        # Add to results with special status and batch_id
                         results.append(UploadResult(
                             filename=file.filename,
                             content_type=file.content_type,
                             size=len(content),
-                            status="json_imported",
+                            status="json_imported_processing",
                             id=import_results[0]["id"] if import_results else None,
-                            imported_count=len(import_results)
+                            imported_count=len(import_results),
+                            batch_id=batch_id
                         ))
                         continue
                 except (json.JSONDecodeError, UnicodeDecodeError):

@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import users, uploads, invoices, extraction, extraction_stream, validation_checklist, validation, validation_stream, resolver, reporter, settings, reports
+from app.api.v1.endpoints import users, uploads, invoices, extraction, extraction_stream, validation_checklist, validation, validation_stream, resolver, reporter, settings, reports, bulk
 
 api_router = APIRouter()
 api_router.include_router(users.router, prefix="/users", tags=["users"])
@@ -14,6 +14,7 @@ api_router.include_router(resolver.router, prefix="/resolver", tags=["resolver"]
 api_router.include_router(reporter.router, prefix="/reporter", tags=["reporter"])
 api_router.include_router(settings.router, prefix="/settings", tags=["settings"])
 api_router.include_router(reports.router, prefix="/reports", tags=["reports"])
+api_router.include_router(bulk.router, prefix="/bulk", tags=["bulk"])
 
 
 

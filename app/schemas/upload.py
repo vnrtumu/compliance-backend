@@ -36,6 +36,10 @@ class Upload(UploadBase):
     # Processing time tracking
     processing_start_time: Optional[datetime] = None
     processing_time: Optional[float] = None
+    
+    # Batch processing tracking
+    batch_id: Optional[str] = None
+    batch_processing_status: Optional[str] = None  # pending, processing, completed, failed
 
     class Config:
         from_attributes = True
@@ -48,5 +52,6 @@ class UploadResult(BaseModel):
     error: Optional[str] = None
     id: Optional[int] = None  # Added ID for tracked uploads
     imported_count: Optional[int] = None  # Number of invoices imported from JSON
+    batch_id: Optional[str] = None  # Batch ID for grouped invoices
 
 
