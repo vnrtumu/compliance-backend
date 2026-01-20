@@ -1,22 +1,25 @@
 """
-LLM-Based Reporter Agent Service
+LLM-Based Reporter Agent Service (LangChain Version)
 
 Generates comprehensive, actionable compliance reports by synthesizing outputs
-from the Extractor, Validator, and Resolver agents.
+from the Extractor, Validator, and Resolver agents. Uses LangChain for LLM abstraction.
 """
 
 import json
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.core.config import settings
-from app.services.llm_client import get_llm_client, get_model_name, get_current_provider
+from app.services.llm_client import get_chat_model, get_model_name, get_current_provider
 
 
 class ActionItem(BaseModel):
     """Action item from report."""
-    priority: str  # HIGH, MEDIUM, LOW
+    priority: str = Field(description="HIGH, MEDIUM, or LOW")
     action: str
     owner: str
     deadline: str
@@ -29,21 +32,56 @@ class ReportSection(BaseModel):
     content: str
 
 
+# Pydantic model for report output
+class ComplianceReport(BaseModel):
+    """Structured compliance report output."""
+    report_id: str
+    report_type: str
+    generated_at: str
+    executive_summary: str
+    decision: Dict
+    risk_assessment: Dict
+    compliance_stats: Dict
+    action_items: List[Dict] = Field(default_factory=list)
+    key_findings: List[Dict] = Field(default_factory=list)
+    recommendations: List[str] = Field(default_factory=list)
+    approval_workflow: Dict = Field(default_factory=dict)
+
+
+# System prompt for reporter
+REPORTER_SYSTEM_PROMPT = """You are an expert GST/TDS compliance report generator.
+Your job is to create clear, actionable compliance reports that help businesses 
+understand their invoice validation results and take appropriate actions.
+
+Guidelines:
+1. Be specific and actionable in recommendations
+2. Cite relevant regulations (Section 194J, CBDT Circular, etc.)
+3. Prioritize action items correctly based on urgency and impact
+4. Calculate risk based on failed checks severity
+5. Format decision rationale clearly for different audiences
+
+Return only valid JSON with the exact structure specified."""
+
+
 class ReporterAgent:
     """
-    LLM-powered Reporter Agent for generating compliance reports.
+    LangChain-powered Reporter Agent for generating compliance reports.
     
     Capabilities:
     - Generate executive summaries for management
     - Create detailed audit reports
     - Produce actionable items with priorities
     - Format reports for different audiences
+    
+    Uses configurable LLM providers via get_chat_model().
     """
     
     def __init__(self):
-        # Use configurable LLM client
-        self.client = None  # Will be set dynamically
-        self.model = None  # Will be set dynamically
+        # Create prompt template
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", REPORTER_SYSTEM_PROMPT),
+            ("human", "{report_prompt}")
+        ])
     
     def generate_report(
         self,
@@ -54,7 +92,7 @@ class ReporterAgent:
         report_type: str = "executive_summary"
     ) -> Dict:
         """
-        Generate a comprehensive compliance report.
+        Generate a comprehensive compliance report using LangChain.
         
         Args:
             upload_id: The upload ID
@@ -141,9 +179,9 @@ class ReporterAgent:
         context: Dict,
         report_type: str
     ) -> Dict:
-        """Generate report using LLM."""
+        """Generate report using LangChain LLM."""
         
-        prompt = f"""Generate a compliance report for invoice analysis.
+        report_prompt = f"""Generate a compliance report for invoice analysis.
 
 ## Context
 ```json
@@ -219,33 +257,30 @@ IMPORTANT:
 - Calculate risk based on failed checks severity"""
 
         try:
-            # Get LLM client and model for current provider
+            # Get LLM model for current provider using LangChain
             provider = get_current_provider()
-            model = get_model_name()
-            client = get_llm_client()
+            model_name = get_model_name()
+            model = get_chat_model(temperature=0.2, max_tokens=2048)
             
             print(f"🤖 Using LLM Provider: {provider}")
-            print(f"📦 Model: {model}")
+            print(f"📦 Model: {model_name}")
             
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are an expert GST/TDS compliance report generator. Return only valid JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.2,
-                max_tokens=2048
-            )
+            # Create chain and invoke
+            chain = self.prompt | model
             
-            report = json.loads(response.choices[0].message.content)
+            response = chain.invoke({
+                "report_prompt": report_prompt
+            })
+            
+            report = json.loads(response.content)
             
             # Add metadata
             report["upload_id"] = upload_id
             report["invoice_details"] = context["invoice"]
             report["llm_metadata"] = {
                 "provider": provider,
-                "model": model,
+                "model": model_name,
+                "framework": "langchain",
                 "generated_at": datetime.now().isoformat()
             }
             
@@ -254,7 +289,7 @@ IMPORTANT:
         except Exception as e:
             # Get provider info for error reporting
             provider = get_current_provider()
-            model = get_model_name()
+            model_name = get_model_name()
             
             # Determine error type
             error_type = type(e).__name__
@@ -263,7 +298,7 @@ IMPORTANT:
             # Create detailed error report
             error_details = {
                 "llm_provider": provider,
-                "llm_model": model,
+                "llm_model": model_name,
                 "error_type": error_type,
                 "error_message": error_message,
             }
@@ -284,7 +319,7 @@ IMPORTANT:
             
             print(f"❌ LLM Error Details:")
             print(f"   Provider: {provider}")
-            print(f"   Model: {model}")
+            print(f"   Model: {model_name}")
             print(f"   Error Type: {error_type}")
             print(f"   Error: {error_message}")
             print(f"   Suggestion: {error_details['suggestion']}")
@@ -295,7 +330,7 @@ IMPORTANT:
                 "error": error_message,
                 "error_details": error_details,
                 "generated_at": datetime.now().isoformat(),
-                "executive_summary": f"📋 Executive Summary\nReport generation failed: {error_message}\n\n🤖 LLM Provider: {provider}\n📦 Model: {model}\n❌ Issue: {error_details['issue']}\n💡 Suggestion: {error_details['suggestion']}"
+                "executive_summary": f"📋 Executive Summary\nReport generation failed: {error_message}\n\n🤖 LLM Provider: {provider}\n📦 Model: {model_name}\n❌ Issue: {error_details['issue']}\n💡 Suggestion: {error_details['suggestion']}"
             }
     
     def generate_text_report(self, report: Dict) -> str:

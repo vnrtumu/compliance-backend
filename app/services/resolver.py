@@ -1,18 +1,22 @@
 """
-LLM-Based Resolver Agent Service
+LLM-Based Resolver Agent Service (LangChain Version)
 
 Handles conflicts, ambiguities, and edge cases flagged by the Validator Agent.
 Provides reasoning, confidence scores, and human review recommendations.
+Uses LangChain for LLM abstraction.
 """
 
 import json
 import re
-from openai import OpenAI
 from typing import Dict, List, Any, Optional
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.core.config import settings
+from app.services.llm_client import get_vision_model
 
 
 class Conflict(BaseModel):
@@ -21,7 +25,7 @@ class Conflict(BaseModel):
     description: str
     gst_interpretation: Optional[str] = None
     tds_interpretation: Optional[str] = None
-    affected_fields: List[str] = []
+    affected_fields: List[str] = Field(default_factory=list)
 
 
 class Resolution(BaseModel):
@@ -48,6 +52,20 @@ class HistoricalDeviation(BaseModel):
     current_decision: str
     reason_for_deviation: str
     regulatory_basis: str
+
+
+# Pydantic model for LLM resolution output
+class ResolverOutput(BaseModel):
+    """Structured output from resolver LLM."""
+    final_recommendation: str = Field(description="APPROVE, REJECT, or ESCALATE")
+    confidence_score: float = Field(ge=0.0, le=1.0, description="Confidence in recommendation")
+    requires_human_review: bool = Field(description="Whether human review is required")
+    reasoning: str = Field(description="Detailed reasoning for the decision")
+    conflict_resolutions: List[Dict] = Field(default_factory=list)
+    ocr_summary: str = Field(default="")
+    temporal_summary: str = Field(default="")
+    historical_deviation_note: str = Field(default="")
+    key_risks: List[str] = Field(default_factory=list)
 
 
 # GST Rate History (key dates)
@@ -88,10 +106,24 @@ CONFLICT_PATTERNS = {
     }
 }
 
+# System prompt for resolver
+RESOLVER_SYSTEM_PROMPT = """You are an expert GST/TDS compliance resolver. 
+Your job is to analyze conflicts, OCR errors, temporal rules, and historical precedents 
+to make final compliance recommendations.
+
+Key responsibilities:
+1. Resolve regulatory conflicts (GST vs TDS, 206AB vs LDC, etc.)
+2. Validate OCR corrections and flag suspicious changes
+3. Apply rules based on invoice date, not processing date
+4. Flag suspicious historical precedents
+5. Provide clear reasoning with regulatory citations
+
+Return only valid JSON with your analysis and recommendations."""
+
 
 class ResolverAgent:
     """
-    LLM-powered Resolver Agent for handling conflicts and edge cases.
+    LangChain-powered Resolver Agent for handling conflicts and edge cases.
     
     Capabilities:
     - Detect and resolve regulatory conflicts (GST vs TDS)
@@ -102,8 +134,12 @@ class ResolverAgent:
     """
     
     def __init__(self):
-        self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        self.model = "gpt-4o"
+        # Use GPT-4o for resolver (complex reasoning required)
+        self.model = get_vision_model(temperature=0.1, max_tokens=2048)
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", RESOLVER_SYSTEM_PROMPT),
+            ("human", "{resolution_context}")
+        ])
     
     def resolve(
         self,
@@ -484,9 +520,9 @@ class ResolverAgent:
         stateful_issues: Dict,
         historical_analysis: Dict
     ) -> Dict:
-        """Use LLM to resolve conflicts and make final recommendation."""
+        """Use LangChain LLM to resolve conflicts and make final recommendation."""
         
-        prompt = f"""You are an expert GST/TDS compliance resolver. Analyze and resolve the following:
+        resolution_context = f"""You are an expert GST/TDS compliance resolver. Analyze and resolve the following:
 
 ## Invoice Data
 ```json
@@ -536,18 +572,14 @@ IMPORTANT:
 - Apply rules as of invoice date, not today"""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "You are an expert GST/TDS compliance resolver. Return only valid JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.1,
-                max_tokens=2048
-            )
+            # Create chain and invoke
+            chain = self.prompt | self.model
             
-            result = json.loads(response.choices[0].message.content)
+            response = chain.invoke({
+                "resolution_context": resolution_context
+            })
+            
+            result = json.loads(response.content)
             
             # Ensure human review if confidence < 70%
             if result.get("confidence_score", 0) < 0.70:

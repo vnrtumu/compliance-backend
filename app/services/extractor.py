@@ -1,7 +1,7 @@
 """
-Extractor Agent Service
+Extractor Agent Service (LangChain Version)
 
-This service uses OpenAI GPT-4o with vision capabilities to analyze uploaded
+This service uses LangChain with OpenAI GPT-4o vision capabilities to analyze uploaded
 documents (invoices) and extract structured data for GST compliance validation.
 """
 
@@ -10,21 +10,68 @@ import base64
 import json
 from typing import Optional, Dict, Any, List
 from pathlib import Path
-from openai import OpenAI
+from pydantic import BaseModel, Field
 import pymupdf  # PyMuPDF for PDF handling
 
+from langchain_core.messages import HumanMessage
+from langchain_core.output_parsers import JsonOutputParser
+
 from app.core.config import settings
+from app.services.llm_client import get_vision_model
+
+
+# Pydantic models for structured extraction
+class InvoiceItem(BaseModel):
+    """Individual line item in an invoice."""
+    description: str = Field(default="", description="Item description")
+    quantity: Optional[float] = Field(default=None, description="Quantity")
+    rate: Optional[float] = Field(default=None, description="Unit rate/price")
+    amount: Optional[float] = Field(default=None, description="Line item amount")
+
+
+class ExtractedFields(BaseModel):
+    """Extracted invoice fields."""
+    invoice_number: Optional[str] = Field(default=None, description="Invoice/bill number")
+    invoice_date: Optional[str] = Field(default=None, description="Date of the invoice")
+    seller_name: Optional[str] = Field(default=None, description="Name of the seller/supplier")
+    seller_gstin: Optional[str] = Field(default=None, description="Seller's 15-digit GSTIN")
+    seller_address: Optional[str] = Field(default=None, description="Seller's address")
+    buyer_name: Optional[str] = Field(default=None, description="Name of the buyer")
+    buyer_gstin: Optional[str] = Field(default=None, description="Buyer's 15-digit GSTIN (if B2B)")
+    buyer_address: Optional[str] = Field(default=None, description="Buyer's address")
+    hsn_codes: List[str] = Field(default_factory=list, description="List of HSN/SAC codes")
+    items: List[InvoiceItem] = Field(default_factory=list, description="List of items")
+    taxable_amount: Optional[float] = Field(default=None, description="Total taxable value")
+    cgst_amount: Optional[float] = Field(default=None, description="Central GST amount")
+    sgst_amount: Optional[float] = Field(default=None, description="State GST amount")
+    igst_amount: Optional[float] = Field(default=None, description="Integrated GST amount")
+    total_tax: Optional[float] = Field(default=None, description="Total tax amount")
+    total_amount: Optional[float] = Field(default=None, description="Grand total")
+    irn: Optional[str] = Field(default=None, description="E-invoice IRN (64-character hash)")
+    place_of_supply: Optional[str] = Field(default=None, description="State/UT of supply")
+
+
+class ExtractionResult(BaseModel):
+    """Complete extraction result from document analysis."""
+    is_valid_invoice: bool = Field(description="Whether this is a valid GST invoice")
+    decision: str = Field(description="ACCEPT or REJECT")
+    document_type: str = Field(description="Type of document detected")
+    confidence_score: float = Field(ge=0.0, le=1.0, description="Confidence in extraction (0-1)")
+    rejection_reasons: List[str] = Field(default_factory=list, description="Reasons for rejection if any")
+    extracted_fields: ExtractedFields = Field(default_factory=ExtractedFields, description="Extracted invoice data")
 
 
 class ExtractorAgent:
     """
-    AI-powered document extractor that analyzes invoices and determines
+    LangChain-powered document extractor that analyzes invoices and determines
     if they are valid for compliance processing.
+    
+    Uses GPT-4o with vision capabilities for document analysis.
     """
 
     def __init__(self):
-        self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        self.model = "gpt-4o"
+        self.model = get_vision_model(temperature=0.1, max_tokens=4096)
+        self.parser = JsonOutputParser(pydantic_object=ExtractionResult)
 
     def _encode_image_to_base64(self, image_path: str) -> str:
         """Convert an image file to base64 string."""
@@ -65,43 +112,9 @@ class ExtractorAgent:
         else:
             raise ValueError(f"Unsupported file type: {file_ext}")
 
-    def analyze_document(self, file_path: str) -> Dict[str, Any]:
-        """
-        Analyze a document and extract GST invoice information.
-        
-        Returns:
-            Dict containing:
-            - is_valid_invoice: bool - Whether this is a valid GST invoice
-            - decision: str - "ACCEPT" or "REJECT"
-            - extracted_fields: dict - Extracted invoice data
-            - confidence_score: float - Confidence in the extraction (0-1)
-            - rejection_reasons: list - Reasons for rejection if any
-            - document_type: str - Type of document detected
-        """
-        if not os.path.exists(file_path):
-            return {
-                "is_valid_invoice": False,
-                "decision": "REJECT",
-                "extracted_fields": {},
-                "confidence_score": 0.0,
-                "rejection_reasons": ["File not found"],
-                "document_type": "unknown"
-            }
-
-        try:
-            images = self._get_image_from_file(file_path)
-        except Exception as e:
-            return {
-                "is_valid_invoice": False,
-                "decision": "REJECT",
-                "extracted_fields": {},
-                "confidence_score": 0.0,
-                "rejection_reasons": [f"Error processing file: {str(e)}"],
-                "document_type": "unknown"
-            }
-
-        # Build the extraction prompt
-        extraction_prompt = """You are a GST Invoice Compliance Validator Agent. Analyze this document and extract information.
+    def _get_extraction_prompt(self) -> str:
+        """Get the extraction prompt for the LLM."""
+        return """You are a GST Invoice Compliance Validator Agent. Analyze this document and extract information.
 
 First, determine if this is a valid GST/Tax invoice. A valid GST invoice must contain:
 1. Invoice number and date
@@ -168,8 +181,45 @@ CRITICAL INSTRUCTIONS FOR REJECTION:
 2. If the document is not an invoice (e.g. valid ID card, subway map, handwriting, random text), set "is_valid_invoice": false.
 3. If "seller_gstin" is NOT found or visible, set "is_valid_invoice": false, "decision": "REJECT", "rejection_reasons": ["Missing Seller GSTIN"]."""
 
-        # Build the message with images
-        content = [{"type": "text", "text": extraction_prompt}]
+    def analyze_document(self, file_path: str) -> Dict[str, Any]:
+        """
+        Analyze a document and extract GST invoice information using LangChain.
+        
+        Returns:
+            Dict containing:
+            - is_valid_invoice: bool - Whether this is a valid GST invoice
+            - decision: str - "ACCEPT" or "REJECT"
+            - extracted_fields: dict - Extracted invoice data
+            - confidence_score: float - Confidence in the extraction (0-1)
+            - rejection_reasons: list - Reasons for rejection if any
+            - document_type: str - Type of document detected
+        """
+        if not os.path.exists(file_path):
+            return {
+                "is_valid_invoice": False,
+                "decision": "REJECT",
+                "extracted_fields": {},
+                "confidence_score": 0.0,
+                "rejection_reasons": ["File not found"],
+                "document_type": "unknown"
+            }
+
+        try:
+            images = self._get_image_from_file(file_path)
+        except Exception as e:
+            return {
+                "is_valid_invoice": False,
+                "decision": "REJECT",
+                "extracted_fields": {},
+                "confidence_score": 0.0,
+                "rejection_reasons": [f"Error processing file: {str(e)}"],
+                "document_type": "unknown"
+            }
+
+        # Build the LangChain message with multimodal content
+        content = [
+            {"type": "text", "text": self._get_extraction_prompt()}
+        ]
         
         for img_base64 in images:
             content.append({
@@ -181,20 +231,12 @@ CRITICAL INSTRUCTIONS FOR REJECTION:
             })
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": content
-                    }
-                ],
-                max_tokens=4096,
-                temperature=0.1
-            )
-
+            # Create the message and invoke the model
+            message = HumanMessage(content=content)
+            response = self.model.invoke([message])
+            
             # Parse the response
-            result_text = response.choices[0].message.content.strip()
+            result_text = response.content.strip()
             
             # Clean up the response if it has markdown code blocks
             if result_text.startswith("```"):
@@ -223,7 +265,7 @@ CRITICAL INSTRUCTIONS FOR REJECTION:
             should_reject = False
             
             if not result.get("is_valid_invoice", False):
-                should_reject = True # Already rejected by LLM
+                should_reject = True  # Already rejected by LLM
                 
             elif doc_type not in valid_doc_types:
                 should_reject = True
@@ -233,7 +275,7 @@ CRITICAL INSTRUCTIONS FOR REJECTION:
                 should_reject = True
                 reasons.append("Missing Seller GSTIN (Enforced)")
                 
-            elif confidence < 0.6: # Reject low confidence extractions
+            elif confidence < 0.6:  # Reject low confidence extractions
                 should_reject = True
                 reasons.append(f"Low confidence score: {confidence}")
 

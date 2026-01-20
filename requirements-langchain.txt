@@ -1,0 +1,13 @@
+# LangChain Dependencies for GST Compliance Validator
+# Add these to your existing dependencies
+
+# LangChain Core
+langchain>=0.3.0
+langchain-core>=0.3.0
+
+# LLM Provider Integrations
+langchain-openai>=0.2.0
+langchain-groq>=0.2.0
+
+# Note: DeepSeek and Grok use OpenAI-compatible APIs, 
+# so they work with langchain-openai using custom base_url

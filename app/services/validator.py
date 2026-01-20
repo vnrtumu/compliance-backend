@@ -1,24 +1,28 @@
 """
-LLM-Based Validator Agent Service
+LLM-Based Validator Agent Service (LangChain Version)
 
-Uses GPT-4o to perform intelligent compliance validation on extracted invoice data.
-Validates against 45 checklist items with context-aware reasoning.
+Uses LangChain with configurable LLM providers to perform intelligent compliance 
+validation on extracted invoice data. Validates against 45 checklist items with 
+context-aware reasoning.
 """
 
 import json
-from openai import OpenAI
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Literal
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.models.validation_checklist import ValidationChecklist
 from app.services.gst_client import gst_client
+from app.services.llm_client import get_chat_model
 
 
 class ValidationStatus(str, Enum):
@@ -49,10 +53,10 @@ class LLMValidationCheck(BaseModel):
 
 class HumanInterventionInfo(BaseModel):
     required: bool = False
-    reasons: List[str] = []
-    failed_checks: List[Dict] = []
+    reasons: List[str] = Field(default_factory=list)
+    failed_checks: List[Dict] = Field(default_factory=list)
     approval_level_required: Optional[str] = None
-    recommended_actions: List[str] = []
+    recommended_actions: List[str] = Field(default_factory=list)
 
 
 class LLMValidationResult(BaseModel):
@@ -61,7 +65,7 @@ class LLMValidationResult(BaseModel):
     checks: List[LLMValidationCheck]
     human_intervention: HumanInterventionInfo
     llm_reasoning: str
-    detected_anomalies: List[str] = []
+    detected_anomalies: List[str] = Field(default_factory=list)
 
 
 # Company policy context for LLM
@@ -160,16 +164,42 @@ VALIDATION_CHECKLIST = """
 - DQ-005: Near-duplicate detection (>95% similar)
 """
 
+# System prompt for validator
+VALIDATOR_SYSTEM_PROMPT = """You are an expert GST and TDS compliance validator for India. 
+Your job is to analyze invoice data and validate it against a comprehensive 45-point checklist.
+
+You must:
+1. Check each validation point carefully
+2. Consider edge cases and historical context (e.g., GST rate changes)
+3. Classify services correctly for TDS (technical vs professional is CRITICAL)
+4. Detect anomalies and suspicious patterns
+5. Provide clear, actionable reasons for failures
+6. Flag items requiring human review
+
+IMPORTANT CLASSIFICATIONS:
+- IT Services, Software Development, Technical Consulting = 194J @ 2% (TECHNICAL)
+- Legal, Accounting, Medical, Architecture = 194J @ 10% (PROFESSIONAL)
+- Contractors, Labor = 194C @ 1% (individual) or 2% (company)
+- Rent = 194I @ 10% on GROSS amount including GST
+
+Return your response as a JSON object with the exact structure specified."""
+
 
 class LLMValidatorAgent:
     """
-    LLM-powered Validator Agent using GPT-4o for intelligent compliance validation.
+    LangChain-powered Validator Agent for intelligent compliance validation.
+    
+    Uses configurable LLM providers (OpenAI, GROQ, DeepSeek, Grok) via the
+    get_chat_model() factory function.
     """
     
     def __init__(self):
-        self.client = OpenAI(api_key=settings.OPENAI_API_KEY)
-        self.model = "gpt-4o"
         self._validation_checks_cache = None
+        # Create prompt template
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", "{system_prompt}"),
+            ("human", "{validation_prompt}")
+        ])
     
     def _get_validation_checks_from_db(self) -> List[Dict]:
         """Fetch active validation checks from database."""
@@ -239,7 +269,7 @@ class LLMValidatorAgent:
         vendor_info: Optional[Dict] = None
     ) -> Dict:
         """
-        Run LLM-powered validation on extracted invoice data.
+        Run LangChain-powered validation on extracted invoice data.
         
         Args:
             upload_id: Database ID of the upload
@@ -297,29 +327,22 @@ class LLMValidatorAgent:
         # --- ENRICHMENT END ---
 
         # Build the validation prompt
-        prompt = self._build_validation_prompt(extracted, vendor_info)
+        validation_prompt = self._build_validation_prompt(extracted, vendor_info)
         
-        # Call GPT-4o for validation
+        # Get the LangChain model (uses current provider setting)
+        model = get_chat_model(temperature=0.1, max_tokens=4096)
+        
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": self._get_system_prompt()
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.1,
-                max_tokens=4096
-            )
+            # Create the chain and invoke
+            chain = self.prompt | model
+            
+            response = chain.invoke({
+                "system_prompt": VALIDATOR_SYSTEM_PROMPT,
+                "validation_prompt": validation_prompt
+            })
             
             # Parse LLM response
-            result = self._parse_llm_response(response.choices[0].message.content)
+            result = self._parse_llm_response(response.content)
             result["upload_id"] = upload_id
             
             return result
@@ -344,27 +367,6 @@ class LLMValidatorAgent:
                 "llm_reasoning": f"Error: {str(e)}",
                 "detected_anomalies": []
             }
-    
-    def _get_system_prompt(self) -> str:
-        """Get the system prompt for the validator LLM."""
-        return """You are an expert GST and TDS compliance validator for India. 
-Your job is to analyze invoice data and validate it against a comprehensive 45-point checklist.
-
-You must:
-1. Check each validation point carefully
-2. Consider edge cases and historical context (e.g., GST rate changes)
-3. Classify services correctly for TDS (technical vs professional is CRITICAL)
-4. Detect anomalies and suspicious patterns
-5. Provide clear, actionable reasons for failures
-6. Flag items requiring human review
-
-IMPORTANT CLASSIFICATIONS:
-- IT Services, Software Development, Technical Consulting = 194J @ 2% (TECHNICAL)
-- Legal, Accounting, Medical, Architecture = 194J @ 10% (PROFESSIONAL)
-- Contractors, Labor = 194C @ 1% (individual) or 2% (company)
-- Rent = 194I @ 10% on GROSS amount including GST
-
-Return your response as a JSON object with the exact structure specified."""
     
     def _build_validation_prompt(
         self, 
